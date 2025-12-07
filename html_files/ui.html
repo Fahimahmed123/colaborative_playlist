@@ -1,0 +1,429 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Playlist UI</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 12px; background: #fafafa; }
+    .container { display:flex; gap:12px; align-items:flex-start; }
+    .panel { background:white; padding:12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.04); }
+    .left { width:35%; }
+    .right { width:65%; }
+    .track, .playlist-item { display:flex; justify-content:space-between; padding:10px; margin-bottom:8px; border:1px solid #ddd; border-radius:6px; background:white; }
+    .track:hover, .playlist-item:hover { box-shadow:0 4px 10px rgba(0,0,0,0.06); }
+    .btn { padding:6px 10px; border:none; border-radius:6px; cursor:pointer; }
+    .btn-add { background:#007bff; color:white; }
+    .btn-vote { background:#f2f2f2; }
+    .now-playing { background:linear-gradient(90deg,#eafff2,#f4fff8); border:1px solid #a8e6c2; }
+    .vote-flash-up { animation: flashUp 0.5s; }
+    .vote-flash-down { animation: flashDown 0.5s; }
+    @keyframes flashUp { from { background:#e0ffe0; } to { background:white; } }
+    @keyframes flashDown { from { background:#ffe0e0; } to { background:white; } }
+    .eq { color:#00aa66; font-weight:700; margin-right:8px; }
+    .small { font-size:13px; color:#666; }
+    .search { width:100%; padding:8px; border:1px solid #ccc; border-radius:6px; margin-bottom:10px; }
+    .drop-highlight { background:#fff5e6 !important; border:1px dashed #ffcc66 !important; }
+    .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+    .status-online { background: #2ecc71; }
+    .status-offline { background: #e74c3c; }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+</head>
+<body>
+<div class="container">
+
+  <div class="panel left">
+    <h3>Track Library</h3>
+    <button id="seedBtn" class="btn">Seed</button>
+    <input id="search" class="search" placeholder="Search tracks..." />
+    <div id="library"></div>
+  </div>
+
+  <div class="panel right">
+    <h3>Playlist <span id="status" class="small">(Loading...)</span></h3>
+    <div id="playlist"></div>
+    <button id="refreshBtn" class="btn" style="margin-top:8px;">Refresh</button>
+    <div id="nowPlayingArea" style="margin-top:10px;"></div>
+  </div>
+
+</div>
+
+<script>
+// values injected by Streamlit
+const API_BASE = "__API__";
+const AUTH_TOKEN = "__TOKEN__";
+const CURRENT_USER = "__USER__";
+
+// endpoints
+const TRACKS_API = API_BASE + "/api/tracks";
+const PLAYLIST_API = API_BASE + "/api/playlist";
+const ADD_API = API_BASE + "/api/playlist/add";
+const UPDATE_API = id => API_BASE + "/api/playlist/" + id + "/update";
+const VOTE_API = id => API_BASE + "/api/playlist/" + id + "/vote";
+const DELETE_API = id => API_BASE + "/api/playlist/" + id + "/delete";
+// <<-- use the API-safe seed route (avoid admin namespace)
+const SEED_API = API_BASE + "/api/admin/seed";
+
+function authHeaders(contentType) {
+  const h = {};
+  if (contentType) h["Content-Type"] = contentType;
+  if (AUTH_TOKEN && AUTH_TOKEN.length > 0) h["Authorization"] = "Token " + AUTH_TOKEN;
+  return h;
+}
+
+async function fetchJSON(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    if (!r.ok) {
+      return null;
+    }
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+let library = [];
+let playlist = [];
+let pollTimer = null;
+let sorted = null;
+
+// load data
+async function loadLibrary() {
+  library = (await fetchJSON(TRACKS_API)) || [];
+  renderLibrary();
+}
+
+function escapeHtml(t) {
+  return (t||"").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function renderLibrary() {
+  const q = document.getElementById("search").value.toLowerCase();
+  const box = document.getElementById("library");
+  box.innerHTML = "";
+
+  for (const t of library) {
+    if (q && !(t.title.toLowerCase().includes(q) || (t.artist||"").toLowerCase().includes(q))) continue;
+
+    const div = document.createElement("div");
+    div.className = "track";
+    div.innerHTML = `
+      <div>
+        <strong>${escapeHtml(t.title)}</strong>
+        <div class="small">${escapeHtml(t.artist)} • ${t.duration_seconds}s</div>
+      </div>
+    `;
+
+    const btn = document.createElement("button");
+    btn.className = "btn btn-add";
+
+    // disable if already in playlist
+    const inPlaylist = playlist.some(p => p.track.id === t.id);
+    btn.disabled = inPlaylist;
+    btn.textContent = inPlaylist ? "Added" : "Add";
+
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      // optimistic add
+      const tempId = "tmp-" + Math.random().toString(36).slice(2,9);
+      const tempItem = {
+        id: tempId,
+        track: t,
+        track_id: t.id,
+        position: playlist.length ? Math.max(...playlist.map(p=>p.position))+1 : 1,
+        votes: 0,
+        added_by: CURRENT_USER || "Anonymous",
+        is_playing: false,
+        added_at: new Date().toISOString()
+      };
+      playlist.push(tempItem);
+      renderPlaylist();
+
+      const res = await fetch(ADD_API, {
+        method:"POST",
+        headers: authHeaders("application/json"),
+        body: JSON.stringify({track_id: t.id, added_by: CURRENT_USER || "Anonymous"})
+      });
+
+      if (!(res && res.ok)) {
+        // revert
+        playlist = playlist.filter(x => x.id !== tempId);
+        renderPlaylist();
+        alert("Failed to add track");
+      }
+      btn.disabled = false;
+    };
+
+    div.appendChild(btn);
+    box.appendChild(div);
+  }
+}
+
+async function reloadPlaylist() {
+  playlist = (await fetchJSON(PLAYLIST_API)) || [];
+  renderPlaylist();
+  renderNowPlaying();
+}
+
+function renderPlaylist() {
+  const box = document.getElementById("playlist");
+  box.innerHTML = "";
+
+  for (const item of playlist) {
+    const div = document.createElement("div");
+    div.className = "playlist-item";
+    if (item.is_playing) div.classList.add("now-playing");
+    div.dataset.id = item.id;
+    div.dataset.position = item.position;
+
+    div.innerHTML = `
+      <div style="display:flex;gap:10px;align-items:center;">
+        <div class="eq">▁▃▅▇</div>
+        <div>
+          <strong>${escapeHtml(item.track.title)}</strong>
+            <div class="small">
+    ${escapeHtml(item.track.artist)} • ${item.track.duration_seconds}s<br>
+    <span style="color:#888;">Added by: ${escapeHtml(item.added_by || "Unknown")}</span>
+</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;">
+        <div class="small" style="width:35px; text-align:center;">${item.votes}</div>
+        <button class="btn btn-vote" data-action="up">▲</button>
+        <button class="btn btn-vote" data-action="down">▼</button>
+        <button class="btn" data-action="play">${item.is_playing ? "Playing" : "Play"}</button>
+        <button class="btn" data-action="delete">Remove</button>
+      </div>
+    `;
+
+    box.appendChild(div);
+  }
+
+  attachHandlers();
+  makeSortable(box);
+  document.getElementById("status").innerText = AUTH_TOKEN && AUTH_TOKEN.length ? "Connected (auth)" : "Connected (no auth)";
+}
+
+function attachHandlers() {
+  document.querySelectorAll(".playlist-item button").forEach(btn => {
+    btn.onclick = async (ev) => {
+      ev.stopPropagation();
+      const el = btn.closest(".playlist-item");
+      const id = el.dataset.id;
+      const action = btn.dataset.action;
+
+      if (action === "up" || action === "down") {
+        btn.disabled = true;
+        await fetch(VOTE_API(id), {
+          method:"POST",
+          headers: authHeaders("application/json"),
+          body: JSON.stringify({direction: action})
+        });
+        flashVote(el, action);
+        btn.disabled = false;
+      }
+
+      if (action === "play") {
+        // optimistic: set local playing
+        playlist = playlist.map(x => ({...x, is_playing: x.id === id}));
+        renderPlaylist();
+        await fetch(UPDATE_API(id), {
+          method:"POST",
+          headers: authHeaders("application/json"),
+          body: JSON.stringify({is_playing:true})
+        });
+      }
+
+      if (action === "delete") {
+        // optimistic remove
+        playlist = playlist.filter(x=> x.id !== id);
+        renderPlaylist();
+        await fetch(DELETE_API(id), {
+          method:"POST",
+          headers: authHeaders()
+        });
+      }
+
+      reloadPlaylist();
+    };
+  });
+}
+
+function flashVote(el, dir) {
+  el.classList.add(dir==="up"?"vote-flash-up":"vote-flash-down");
+  setTimeout(() => el.classList.remove("vote-flash-up","vote-flash-down"), 600);
+}
+
+function makeSortable(el) {
+  if (sorted) sorted.destroy();
+
+  sorted = new Sortable(el, {
+    animation:150,
+    ghostClass:"drop-highlight",
+    onEnd: async (evt) => {
+      const items = Array.from(el.querySelectorAll(".playlist-item"));
+      const movedId = evt.item.dataset.id;
+      const prev = evt.newIndex > 0 ? parseFloat(items[evt.newIndex - 1].dataset.position) : null;
+      const next = evt.newIndex < items.length - 1 ? parseFloat(items[evt.newIndex + 1].dataset.position) : null;
+      const newPos = prev===null && next===null ? 1 : prev===null ? next-1 : next===null ? prev+1 : (prev+next)/2;
+
+      // optimistic local change
+      const idx = playlist.findIndex(x=> x.id === movedId);
+      if (idx !== -1) {
+        playlist[idx].position = newPos;
+        playlist.sort((a,b)=> a.position - b.position);
+        renderPlaylist();
+      }
+
+      await fetch(UPDATE_API(movedId), {
+        method:"POST",
+        headers: authHeaders("application/json"),
+        body: JSON.stringify({position:newPos})
+      });
+
+      reloadPlaylist();
+    }
+  });
+}
+
+function renderNowPlaying() {
+  const cur = playlist.find(x => x.is_playing);
+  const area = document.getElementById("nowPlayingArea");
+  if (!cur) { area.innerHTML = ""; return; }
+  area.innerHTML = `
+    <div style="display:flex;gap:10px;align-items:center;">
+      <div class="eq">▁ ▃ ▅ ▇</div>
+      <div>
+        <strong>${escapeHtml(cur.track.title)}</strong>
+        <div class="small">${escapeHtml(cur.track.artist)}</div>
+      </div>
+    </div>
+  `;
+}
+
+// SSE realtime connection
+const STATUS_EL = document.getElementById("status");
+let sse = null;
+let sseBackoff = 1000;
+
+function setStatus(text, online=true) {
+  if (online) STATUS_EL.innerHTML = `<span class="status-dot status-online"></span>${text}`;
+  else STATUS_EL.innerHTML = `<span class="status-dot status-offline"></span>${text}`;
+}
+
+function startSSE() {
+  if (sse) {
+    try { sse.close(); } catch(e) {}
+    sse = null;
+  }
+  const url = `${API_BASE}/api/stream`;
+  try {
+    sse = new EventSource(url);
+  } catch (e) {
+    scheduleReconnect();
+    return;
+  }
+  setStatus("Realtime (SSE)", true);
+  sse.onopen = () => {
+    sseBackoff = 1000;
+    setStatus("Realtime (SSE)", true);
+  };
+  sse.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      handleRealtimeEvent(data);
+    } catch (e) {
+      console.warn("Bad SSE payload", e);
+    }
+  };
+  sse.onerror = (e) => {
+    setStatus("Disconnected — reconnecting...", false);
+    scheduleReconnect();
+  };
+}
+
+function scheduleReconnect() {
+  if (sse) try { sse.close(); } catch(e) {}
+  sse = null;
+  setTimeout(() => {
+    startSSE();
+    sseBackoff = Math.min(30000, Math.round(sseBackoff * 1.5));
+  }, sseBackoff);
+}
+
+function handleRealtimeEvent(e) {
+  switch (e.type) {
+    case "track.added":
+        // Remove optimistic temp entries for same track
+        playlist = playlist.filter(x => x.track.id !== e.item.track.id);
+
+        // Add real item from backend
+        playlist.push(e.item);
+
+        // Sort & refresh UI
+        playlist.sort((a,b)=> a.position - b.position);
+        renderPlaylist();
+        break;
+        
+    case "track.removed":
+      playlist = playlist.filter(x=> x.id !== e.id);
+      renderPlaylist();
+      break;
+    case "track.moved":
+      {
+        const idx = playlist.findIndex(x=> x.id === e.item.id);
+        if (idx !== -1) playlist[idx].position = e.item.position;
+        else playlist.push(e.item);
+        playlist.sort((a,b)=> a.position - b.position);
+        renderPlaylist();
+      }
+      break;
+    case "track.voted":
+      {
+        const idx = playlist.findIndex(x=> x.id === e.item.id);
+        if (idx !== -1) {
+          playlist[idx].votes = e.item.votes;
+          renderPlaylist();
+        }
+      }
+      break;
+    case "track.playing":
+      playlist = playlist.map(x => x.id === e.item.id ? e.item : {...x, is_playing:false});
+      renderPlaylist();
+      renderNowPlaying();
+      break;
+    default:
+      break;
+  }
+}
+
+// utils
+function debounce(fn, ms) {
+  let t;
+  return function(...args) {
+    clearTimeout(t);
+    t = setTimeout(()=> fn.apply(this, args), ms);
+  }
+}
+
+// hookup UI
+document.getElementById("search").addEventListener('input', debounce(renderLibrary, 180));
+document.getElementById("seedBtn").onclick = async () => {
+  await fetch(SEED_API, { method:"GET", headers: authHeaders() });
+  await loadLibrary(); await reloadPlaylist();
+};
+document.getElementById("refreshBtn").onclick = reloadPlaylist;
+
+(async function init() {
+  await loadLibrary();
+  await reloadPlaylist();
+  startSSE();
+})();
+</script>
+</body>
+</html>
