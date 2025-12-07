@@ -1,4 +1,4 @@
-# 🎵 Collaborative Playlist 
+<img width="1445" height="915" alt="docker_running" src="https://github.com/user-attachments/assets/80edddbc-f607-4903-9b2e-c5629e245734" /># 🎵 Collaborative Playlist 
 A realtime collaborative playlist system where users can add tracks, vote, reorder, and see updates instantly through Server-Sent Events (SSE). The backend is built using **Django REST Framework**, and the frontend uses **Streamlit** with a custom embedded HTML+JS interface for live syncing.
 
 ---
@@ -169,4 +169,14 @@ docker exec -it django_app python manage.py seed
 * Deploy the project to Render/Heroku with CI/CD
 * Add more tests: concurrency tests, SSE tests, and playlist ordering tests
 * Improve error handling and add rate limiting
+
+
+Working screenshots are given:
+
+<img width="1876" height="927" alt="login" src="https://github.com/user-attachments/assets/8c4640ee-f631-41e1-a504-61a554e099e0" />
+<img width="1876" height="927" alt="realtime_sync2" src="https://github.com/user-attachments/assets/3d2d8f19-5d67-4cbf-b021-7e6988d5d39b" />
+<img width="1876" height="927" alt="realtime_sync" src="https://github.com/user-attachments/assets/27a2eb40-9a9e-4f78-8fa1-bebf84135fbd" />
+<img width="1876" height="927" alt="playlist_view" src="https://github.com/user-attachments/assets/3f3371fa-c12f-4bdb-881f-bedba327f8ca" />
+<img width="1445" height="915" alt="docker_running" src="https://github.com/user-attachments/assets/69e1e6f7-cbf0-4eab-aca8-5230be26fb59" />
+
 
