@@ -1,4 +1,4 @@
-<img width="1445" height="915" alt="docker_running" src="https://github.com/user-attachments/assets/80edddbc-f607-4903-9b2e-c5629e245734" /># 🎵 Collaborative Playlist 
+🎵 Collaborative Playlist 
 A realtime collaborative playlist system where users can add tracks, vote, reorder, and see updates instantly through Server-Sent Events (SSE). The backend is built using **Django REST Framework**, and the frontend uses **Streamlit** with a custom embedded HTML+JS interface for live syncing.
 
 ---
